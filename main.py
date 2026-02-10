@@ -307,7 +307,7 @@ class Game:
 
 def main() -> None:
     pygame.init()
-    pygame.display.set_caption("Dungen Prototype")
+    pygame.display.set_caption("Dungeon Prototype")
     screen = pygame.display.set_mode((MAP_WIDTH * TILE_SIZE, MAP_HEIGHT * TILE_SIZE))
     assets = load_assets()
     game = Game(assets)
