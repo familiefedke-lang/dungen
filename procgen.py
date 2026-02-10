@@ -3,9 +3,11 @@ from __future__ import annotations
 import random
 from typing import Iterator, List, Tuple, TYPE_CHECKING
 
-import tcod
+try:
+    import tcod
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    tcod = None
 
-import entity_factories
 from game_map import GameMap
 import tile_types
 
@@ -43,29 +45,13 @@ class RectangularRoom:
         )
 
 
-def place_entities(
-    room: RectangularRoom, dungeon: GameMap, maximum_monsters: int,
-) -> None:
-    number_of_monsters = random.randint(0, maximum_monsters)
-
-    for i in range(number_of_monsters):
-        x = random.randint(room.x1 + 1, room.x2 - 1)
-        y = random.randint(room.y1 + 1, room.y2 - 1)
-
-        if not any(entity.x == x and entity.y == y for entity in dungeon.entities):
-            if random.random() < 0.8:
-                entity_factories.orc.spawn(dungeon, x, y)
-            else:
-                entity_factories.troll.spawn(dungeon, x, y)
-
-
 def tunnel_between(
-    start: Tuple[int, int], end: Tuple[int, int]
+    start: Tuple[int, int], end: Tuple[int, int], rng: random.Random
 ) -> Iterator[Tuple[int, int]]:
     """Return an L-shaped tunnel between these two points."""
     x1, y1 = start
     x2, y2 = end
-    if random.random() < 0.5:  # 50% chance.
+    if rng.uniform(0.0, 1.0) < 0.5:  # 50% chance.
         # Move horizontally, then vertically.
         corner_x, corner_y = x2, y1
     else:
@@ -73,10 +59,49 @@ def tunnel_between(
         corner_x, corner_y = x1, y2
 
     # Generate the coordinates for this tunnel.
-    for x, y in tcod.los.bresenham((x1, y1), (corner_x, corner_y)).tolist():
+    for x, y in _bresenham_line((x1, y1), (corner_x, corner_y)):
         yield x, y
-    for x, y in tcod.los.bresenham((corner_x, corner_y), (x2, y2)).tolist():
+    for x, y in _bresenham_line((corner_x, corner_y), (x2, y2)):
         yield x, y
+
+
+def _bresenham_line(
+    start: Tuple[int, int], end: Tuple[int, int]
+) -> Iterator[Tuple[int, int]]:
+    if tcod is not None:
+        for x, y in tcod.los.bresenham(start, end).tolist():
+            yield x, y
+        return
+    x1, y1 = start
+    x2, y2 = end
+    dx = abs(x2 - x1)
+    dy = -abs(y2 - y1)
+    sx = 1 if x1 < x2 else -1
+    sy = 1 if y1 < y2 else -1
+    err = dx + dy
+    while True:
+        yield x1, y1
+        if x1 == x2 and y1 == y2:
+            break
+        e2 = 2 * err
+        if e2 >= dy:
+            err += dy
+            x1 += sx
+        if e2 <= dx:
+            err += dx
+            y1 += sy
+
+
+def _create_rng(seed: int | None) -> random.Random:
+    if tcod is not None:
+        return tcod.random.Random(seed)
+    return random.Random(seed)
+
+
+def generate_seed() -> int:
+    if tcod is not None:
+        return tcod.random.Random().randint(0, 2**31 - 1)
+    return random.SystemRandom().randrange(0, 2**31 - 1)
 
 
 def generate_dungeon(
@@ -85,20 +110,23 @@ def generate_dungeon(
     room_max_size: int,
     map_width: int,
     map_height: int,
-    max_monsters_per_room: int,
     player: Entity,
-) -> GameMap:
+    seed: int | None = None,
+) -> Tuple[GameMap, int]:
     """Generate a new dungeon map."""
-    dungeon = GameMap(map_width, map_height, entities=[player])
+    if seed is None:
+        seed = generate_seed()
+    rng = _create_rng(seed)
+    dungeon = GameMap(map_width, map_height)
 
     rooms: List[RectangularRoom] = []
 
     for r in range(max_rooms):
-        room_width = random.randint(room_min_size, room_max_size)
-        room_height = random.randint(room_min_size, room_max_size)
+        room_width = rng.randint(room_min_size, room_max_size)
+        room_height = rng.randint(room_min_size, room_max_size)
 
-        x = random.randint(0, dungeon.width - room_width - 1)
-        y = random.randint(0, dungeon.height - room_height - 1)
+        x = rng.randint(0, dungeon.width - room_width - 1)
+        y = rng.randint(0, dungeon.height - room_height - 1)
 
         # "RectangularRoom" class makes rectangles easier to work with
         new_room = RectangularRoom(x, y, room_width, room_height)
@@ -116,12 +144,14 @@ def generate_dungeon(
             player.x, player.y = new_room.center
         else:  # All rooms after the first.
             # Dig out a tunnel between this room and the previous one.
-            for x, y in tunnel_between(rooms[-1].center, new_room.center):
+            for x, y in tunnel_between(rooms[-1].center, new_room.center, rng):
                 dungeon.tiles[x, y] = tile_types.floor
-
-        place_entities(new_room, dungeon, max_monsters_per_room)
 
         # Finally, append the new room to the list.
         rooms.append(new_room)
 
-    return dungeon
+    if rooms:
+        dungeon.entrance = rooms[0].center
+        dungeon.exit = rooms[-1].center
+        player.x, player.y = dungeon.entrance
+    return dungeon, seed
